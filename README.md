@@ -49,7 +49,7 @@ python main.py
 To make a single executable for non-technical users:
 
 ```bash
-pyinstaller --onefile --windowed main.py
+pyinstaller --onefile --windowed --name "NamedTimers" --icon app.ico --add-data "app.ico;." main.py
 ```
 
 After the build completes, you’ll find your app under:

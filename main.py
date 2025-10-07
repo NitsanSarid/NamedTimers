@@ -1,9 +1,11 @@
+import os
 import sys
 import time
 from dataclasses import dataclass
 from typing import Dict, List
 
 from PySide6.QtCore import Qt, QTimer, QSize, Signal, QObject
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QLineEdit, QPushButton, QHBoxLayout,
     QVBoxLayout, QListWidget, QListWidgetItem, QLabel, QProgressBar, QToolButton,
@@ -469,10 +471,26 @@ class MainWindow(QMainWindow):
         self.status_active_lbl.setText(f"Active: {active}")
         self.status_finished_lbl.setText(f"Finished: {finished}")
 
+
 # ========= ENTRY POINT =========
 def main():
+    def resource_path(relative_path):
+        """ Get absolute path to resource, works for dev and for PyInstaller """
+        try:
+            # PyInstaller creates a temp folder and stores path in _MEIPASS
+            base_path = sys._MEIPASS
+        except Exception:
+            base_path = os.path.abspath(".")
+
+        return os.path.join(base_path, relative_path)
+
+
+    iconPath = resource_path("app.ico")
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(iconPath))   # 🔹 set global icon
+
     w = MainWindow()
+    w.setWindowIcon(QIcon(iconPath))     # 🔹 window icon too
     w.show()
     sys.exit(app.exec())
 
