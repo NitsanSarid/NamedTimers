@@ -5,11 +5,10 @@ on:
     branches:
       - main
       - master
-  workflow_dispatch: # Allows manual trigger from the GitHub UI
+  workflow_dispatch:
 
 jobs:
   build:
-    # Use a matrix to run the same job on Windows and macOS
     strategy:
       matrix:
         os: [windows-latest, macos-latest]
@@ -27,11 +26,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Install PySide6 and PyInstaller
           pip install pyside6 PyInstaller
-          
-          # Install any other dependencies you have in requirements.txt
-          # pip install -r requirements.txt
+          # pip install -r requirements.txt # Uncomment if needed
 
       - name: Determine OS-Specific PyInstaller Command
         id: pyinstaller_command
@@ -39,14 +35,16 @@ jobs:
         run: |
           APP_NAME="NamedTimers"
           
+          # Add the --noconfirm flag to force cleanup and overwrite the dist directory
+          COMMON_FLAGS='--onefile --windowed --name "${APP_NAME}" --noconfirm'
+
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
             # Windows command: Uses ';' as separator and the .ico icon
-            PYI_CMD='pyinstaller --onefile --windowed --name "${APP_NAME}" --icon "app.ico" --add-data "app.ico;." main.py'
+            PYI_CMD="pyinstaller ${COMMON_FLAGS} --icon 'app.ico' --add-data 'app.ico;.' main.py"
             OUTPUT_FILE="${APP_NAME}.exe"
           else
             # macOS command: Uses ':' as separator and the .icns icon
-            # Note: The --add-data path separator is ':' on macOS/Linux.
-            PYI_CMD='pyinstaller --onefile --windowed --name "${APP_NAME}" --icon "app.icns" --add-data "app.ico:." main.py'
+            PYI_CMD="pyinstaller ${COMMON_FLAGS} --icon 'app.icns' --add-data 'app.ico:.' main.py"
             OUTPUT_FILE="${APP_NAME}"
           fi
           
