@@ -1,10 +1,6 @@
 name: Cross-Platform PyInstaller Build
 
 on:
-  push:
-    branches:
-      - main
-      - master
   workflow_dispatch:
 
 jobs:
@@ -34,22 +30,22 @@ jobs:
         shell: bash
         run: |
           APP_NAME="NamedTimers"
-          
-          # Add the --noconfirm flag to force cleanup and overwrite the dist directory
-          COMMON_FLAGS='--onefile --windowed --name "${APP_NAME}" --noconfirm'
+          # Use --noconfirm to ensure clean builds
+          COMMON_FLAGS='--windowed --name "${APP_NAME}" --noconfirm'
 
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            # Windows command: Uses ';' as separator and the .ico icon
-            PYI_CMD="pyinstaller ${COMMON_FLAGS} --icon 'app.ico' --add-data 'app.ico;.' main.py"
-            OUTPUT_FILE="${APP_NAME}.exe"
+            # Windows: Use --onefile and the .ico icon
+            PYI_CMD="pyinstaller ${COMMON_FLAGS} --onefile --icon 'app.ico' --add-data 'app.ico;.' main.py"
+            OUTPUT_PATH="dist/${APP_NAME}.exe"
           else
-            # macOS command: Uses ':' as separator and the .icns icon
-            PYI_CMD="pyinstaller ${COMMON_FLAGS} --icon 'app.icns' --add-data 'app.ico:.' main.py"
-            OUTPUT_FILE="${APP_NAME}"
+            # macOS: Use --onedir (standard for Mac GUI apps) and the .icns icon
+            PYI_CMD="pyinstaller ${COMMON_FLAGS} --onedir --icon 'app.icns' --add-data 'app.ico:.' main.py"
+            # The output is a folder: NamedTimers.app
+            OUTPUT_PATH="dist/${APP_NAME}.app" 
           fi
           
           echo "cmd=$PYI_CMD" >> $GITHUB_OUTPUT
-          echo "file_name=$OUTPUT_FILE" >> $GITHUB_OUTPUT
+          echo "path=$OUTPUT_PATH" >> $GITHUB_OUTPUT
           
       - name: Run PyInstaller Build
         shell: bash
@@ -58,5 +54,5 @@ jobs:
       - name: Upload Executable Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.pyinstaller_command.outputs.file_name }}-${{ matrix.os }}
-          path: dist/${{ steps.pyinstaller_command.outputs.file_name }}
+          name: ${{ github.job }}-${{ matrix.os }}
+          path: ${{ steps.pyinstaller_command.outputs.path }} # Use the correct output path
