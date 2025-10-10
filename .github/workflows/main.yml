@@ -1,0 +1,64 @@
+name: Cross-Platform PyInstaller Build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch: # Allows manual trigger from the GitHub UI
+
+jobs:
+  build:
+    # Use a matrix to run the same job on Windows and macOS
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          # Install PySide6 and PyInstaller
+          pip install pyside6 PyInstaller
+          
+          # Install any other dependencies you have in requirements.txt
+          # pip install -r requirements.txt
+
+      - name: Determine OS-Specific PyInstaller Command
+        id: pyinstaller_command
+        shell: bash
+        run: |
+          APP_NAME="NamedTimers"
+          
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            # Windows command: Uses ';' as separator and the .ico icon
+            PYI_CMD='pyinstaller --onefile --windowed --name "${APP_NAME}" --icon "app.ico" --add-data "app.ico;." main.py'
+            OUTPUT_FILE="${APP_NAME}.exe"
+          else
+            # macOS command: Uses ':' as separator and the .icns icon
+            # Note: The --add-data path separator is ':' on macOS/Linux.
+            PYI_CMD='pyinstaller --onefile --windowed --name "${APP_NAME}" --icon "app.icns" --add-data "app.ico:." main.py'
+            OUTPUT_FILE="${APP_NAME}"
+          fi
+          
+          echo "cmd=$PYI_CMD" >> $GITHUB_OUTPUT
+          echo "file_name=$OUTPUT_FILE" >> $GITHUB_OUTPUT
+          
+      - name: Run PyInstaller Build
+        shell: bash
+        run: ${{ steps.pyinstaller_command.outputs.cmd }}
+
+      - name: Upload Executable Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pyinstaller_command.outputs.file_name }}-${{ matrix.os }}
+          path: dist/${{ steps.pyinstaller_command.outputs.file_name }}
