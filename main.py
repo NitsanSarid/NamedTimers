@@ -4,8 +4,17 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List
 
+# Try to import darkdetect for theme detection.
+# If it's not installed, we'll default to a light theme.
+# You can install it with: pip install darkdetect
+try:
+    import darkdetect
+except ImportError:
+    print("Warning: darkdetect not found. Defaulting to light theme. `pip install darkdetect` for auto-detection.")
+    darkdetect = None
+
 from PySide6.QtCore import Qt, QTimer, QSize, Signal, QObject
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QPalette, QColor
 from PySide6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QLineEdit, QPushButton, QHBoxLayout,
     QVBoxLayout, QListWidget, QListWidgetItem, QLabel, QProgressBar, QToolButton,
@@ -14,18 +23,10 @@ from PySide6.QtWidgets import (
 
 # ========= GLOBALS / CONFIG =========
 APP_NAME = "Named Timers"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # Single source of truth for duration (change this to adjust all timers globally)
-BASE_DURATION_SEC = 40 * 60  # e.g., set to 25*60 for “pomodoro style”
-
-# Palette
-COLOR_GREEN = "#21A179"
-COLOR_ORANGE = "#F39C12"
-COLOR_RED = "#E74C3C"
-COLOR_FINISHED_BG = "#ECECEC"
-COLOR_TEXT = "#D1D0D0"
-COLOR_MUTED = "#7F8C8D"
+BASE_DURATION_SEC = 1 * 60  # e.g., set to 25*60 for “pomodoro style”
 
 # UI sizing
 ROW_HEIGHT = 88
@@ -35,12 +36,51 @@ BASE_FONT_PT = 12          # main font size
 TITLE_FONT_PT = 14         # timer name
 TIME_FONT_PT = 16          # remaining time
 
+# ========= THEME / PALETTE =========
+# Centralized color definitions for light and dark modes.
+THEMES = {
+    'light': {
+        "green": "#21A179",
+        "orange": "#F39C12",
+        "red": "#E74C3C",
+        "muted": "#7F8C8D",
+
+        "text": "#2C3E50",              # Dark text for light backgrounds
+        "text_on_color_bg": "#2C3E50",  # High-contrast text for colored backgrounds
+
+        "window_bg": "#FDFEFE",
+        "finished_bg": "#ECECEC",
+        "progress_bg": "#f2f2f2",
+        "progress_border": "#e0e0e0",
+        "list_item_spacing": "#E0E0E0",
+    },
+    'dark': {
+        "green": "#2ECC71",             # Brighter green for contrast
+        "orange": "#F1C40F",            # Brighter orange
+        "red": "#E74C3C",
+        "muted": "#95A5A6",
+
+        "text": "#ECF0F1",              # Light text for dark backgrounds
+        "text_on_color_bg": "#FFFFFF",
+
+        "window_bg": "#2C3E50",
+        "finished_bg": "#34495E",
+        "progress_bg": "#1C2B3A",
+        "progress_border": "#4A6572",
+        "list_item_spacing": "#34495E",
+    }
+}
+
+# This global dictionary will be updated to point to the currently active theme.
+THEME = THEMES['light']
+
 def hex_to_rgb(hex_str: str):
+    """Converts a hex color string to an (r, g, b) tuple."""
     hex_str = hex_str.lstrip("#")
     return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4))
 
 def rgba_tint(hex_str: str, alpha: float = 0.22) -> str:
-    """Return an rgba() with a gentle alpha tint for backgrounds."""
+    """Returns a CSS rgba() string with a specified alpha tint."""
     r, g, b = hex_to_rgb(hex_str)
     a = max(0.0, min(1.0, alpha))
     return f"rgba({r}, {g}, {b}, {a:.3f})"
@@ -61,17 +101,18 @@ class TimerState:
         return self.remaining_sec <= 0
 
     def color_for_remaining(self) -> str:
+        """Gets the appropriate status color from the current theme."""
         r = self.remaining_sec
         if r <= 0:
-            return COLOR_MUTED
+            return THEME["muted"]
         first_cut = (2 * BASE_DURATION_SEC) // 3
         second_cut = BASE_DURATION_SEC // 3
-        if r > first_cut:          # first third remaining
-            return COLOR_GREEN
-        elif r > second_cut:       # second third remaining
-            return COLOR_ORANGE
-        else:                      # last third
-            return COLOR_RED
+        if r > first_cut:
+            return THEME["green"]
+        elif r > second_cut:
+            return THEME["orange"]
+        else:
+            return THEME["red"]
 
     def display_mmss(self) -> str:
         if self.is_finished():
@@ -151,7 +192,7 @@ class TimerManager(QObject):
 # ========= UI WIDGET =========
 class TimerWidget(QWidget):
     request_remove = Signal(str)
-    state_changed = Signal()  # for resort if state toggles
+    state_changed = Signal()
 
     def __init__(self, model: TimerState, parent=None):
         super().__init__(parent)
@@ -160,50 +201,24 @@ class TimerWidget(QWidget):
         self.update_view()
 
     def _build_ui(self):
-        # Labels over *app background* (matches window background)
         self.name_lbl = QLabel(self.model.name)
-        self.name_lbl.setStyleSheet(f"""
-            QLabel {{
-                font-weight: 700;
-                font-size: {TITLE_FONT_PT}pt;
-                background: palette(window);
-                padding: 2px 6px;
-                border-radius: 4px;
-            }}
-        """)
-
         self.time_lbl = QLabel()
         self.time_lbl.setMinimumWidth(80)
         self.time_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.time_lbl.setStyleSheet(f"""
-            QLabel {{
-                font-family: Consolas, 'Cascadia Mono', 'Courier New', monospace;
-                font-size: {TIME_FONT_PT}pt;
-                background: palette(window);
-                padding: 2px 6px;
-                border-radius: 4px;
-            }}
-        """)
 
-        # Progress bar (secondary to the big color background/strip)
+        # Set base font styles here before adding the labels to the layout.
+        # This ensures the initial sizeHint is calculated with the correct font metrics,
+        # preventing the label from being truncated when the layout is first built.
+        self.name_lbl.setStyleSheet(f"font-weight: 700; font-size: {TITLE_FONT_PT}pt;")
+        self.time_lbl.setStyleSheet(f"font-family: Consolas, 'Cascadia Mono', 'Courier New', monospace; font-size: {TIME_FONT_PT}pt;")
+
         self.progress = QProgressBar()
         self.progress.setRange(0, 1000)
         self.progress.setTextVisible(False)
         self.progress.setFixedHeight(PROGRESS_HEIGHT)
-        self.progress.setStyleSheet("""
-            QProgressBar {
-                background-color: #f2f2f2;
-                border: 1px solid #e0e0e0;
-                border-radius: 9px;
-            }
-            QProgressBar::chunk {
-                border-radius: 9px;
-            }
-        """)
 
         self.pause_btn = QToolButton()
         self.pause_btn.setToolTip("Pause / Resume")
-        # icon set in update_view() based on running state
         self.pause_btn.clicked.connect(self._toggle_pause)
         self.pause_btn.setIconSize(QSize(28, 28))
 
@@ -234,8 +249,6 @@ class TimerWidget(QWidget):
         root.addLayout(right_col, 0)
 
         self.setAutoFillBackground(True)
-        # Base style; actual color/tint set in update_view()
-        self.setStyleSheet(f"color:{COLOR_TEXT}; border-left: {LEFT_STRIP_PX}px solid transparent;")
         self.setMinimumHeight(ROW_HEIGHT)
 
     def _toggle_pause(self):
@@ -243,27 +256,26 @@ class TimerWidget(QWidget):
             return
         self.model.running = not self.model.running
         self.state_changed.emit()
-        self.update_view()  # ensures icon flips immediately
+        self.update_view()
 
     def update_view(self):
+        """Updates the widget's appearance based on its state and the global THEME."""
         self.name_lbl.setText(self.model.name)
         self.time_lbl.setText(self.model.display_mmss())
+        self.progress.setValue(int(self.model.progress01() * 1000))
 
-        pct = int(self.model.progress01() * 1000)
-        self.progress.setValue(pct)
-
-        # Pause/Play icon reflects state (Requirement #1)
         if self.model.running and not self.model.is_finished():
             self.pause_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
         else:
             self.pause_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
 
         color = self.model.color_for_remaining()
-        # Progress chunk color
+
+        # Update progress bar colors from theme
         self.progress.setStyleSheet(f"""
             QProgressBar {{
-                background-color: #f2f2f2;
-                border: 1px solid #e0e0e0;
+                background-color: {THEME['progress_bg']};
+                border: 1px solid {THEME['progress_border']};
                 border-radius: 9px;
             }}
             QProgressBar::chunk {{
@@ -272,20 +284,32 @@ class TimerWidget(QWidget):
             }}
         """)
 
-        # Big visible signal: left color strip + tinted background
+        # Determine colors for background and text based on timer state
         if self.model.is_finished():
             self.pause_btn.setEnabled(False)
-            self.setStyleSheet(
-                f"background:{COLOR_FINISHED_BG}; color:{COLOR_TEXT}; border-left: {LEFT_STRIP_PX}px solid {COLOR_MUTED};"
-            )
+            widget_bg = THEME['finished_bg']
+            widget_border = THEME['muted']
+            label_color = THEME['muted']
         else:
             self.pause_btn.setEnabled(True)
-            tint = rgba_tint(color, 0.22)
-            self.setStyleSheet(
-                f"background:{tint}; color:{COLOR_TEXT}; border-left: {LEFT_STRIP_PX}px solid {color};"
-            )
-        # keep minimum height
-        self.setMinimumHeight(ROW_HEIGHT)
+            widget_bg = rgba_tint(color, 0.22)
+            widget_border = color
+            label_color = THEME['text_on_color_bg']
+
+        # Apply styles to the main widget background and border
+        self.setStyleSheet(f"background:{widget_bg}; border-left: {LEFT_STRIP_PX}px solid {widget_border};")
+
+        # Apply styles to labels, ensuring correct text color
+        self.name_lbl.setStyleSheet(f"""
+            QLabel {{
+                font-weight: 700; font-size: {TITLE_FONT_PT}pt;
+                background: transparent; color: {label_color};
+            }}""")
+        self.time_lbl.setStyleSheet(f"""
+            QLabel {{
+                font-family: Consolas, 'Cascadia Mono', 'Courier New', monospace; font-size: {TIME_FONT_PT}pt;
+                background: transparent; color: {label_color};
+            }}""")
 
 # ========= MAIN WINDOW =========
 class MainWindow(QMainWindow):
@@ -293,41 +317,96 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} — v{VERSION} — {BASE_DURATION_SEC//60}min")
         self.manager = TimerManager()
+        self.current_theme_name = self.get_system_theme()
+        
+        self._update_global_theme()
         self._build_ui()
         self._connect_signals()
+        self._apply_global_stylesheet() # Apply initial theme styles
 
-        # Global tick (1s)
+        # Global tick for timers (1s)
         self.ticker = QTimer(self)
         self.ticker.setInterval(1000)
         self.ticker.timeout.connect(self._on_tick)
         self.ticker.start()
 
-    def _build_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
+        # Timer to poll for system theme changes
+        self.theme_timer = QTimer(self)
+        self.theme_timer.setInterval(1000) # Check every second
+        self.theme_timer.timeout.connect(self._check_theme)
+        self.theme_timer.start()
 
-        # Global app stylesheet for bigger, readable UI (Requirement #3)
+    def get_system_theme(self) -> str:
+        """Checks for the system theme, defaulting to 'light'."""
+        if darkdetect is None:
+            return 'light'
+        return 'dark' if darkdetect.isDark() else 'light'
+    
+    def _update_global_theme(self):
+        """Updates the global THEME variable."""
+        global THEME
+        THEME = THEMES[self.current_theme_name]
+
+    def _check_theme(self):
+        """Periodically checks if the system theme has changed."""
+        new_theme_name = self.get_system_theme()
+        if new_theme_name != self.current_theme_name:
+            self.current_theme_name = new_theme_name
+            self._update_global_theme()
+            self._on_theme_changed()
+
+    def _on_theme_changed(self):
+        """Applies new theme colors and rebuilds the list to reflect changes."""
+        self._apply_global_stylesheet()
+        self._rebuild_list()
+
+    def _apply_global_stylesheet(self):
+        """Sets a rich stylesheet for the whole application based on the current theme."""
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor(THEME["window_bg"]))
+        palette.setColor(QPalette.WindowText, QColor(THEME["text"]))
+        palette.setColor(QPalette.Base, QColor(THEME["window_bg"]))
+        palette.setColor(QPalette.AlternateBase, QColor(THEME["finished_bg"]))
+        palette.setColor(QPalette.Text, QColor(THEME["text"]))
+        palette.setColor(QPalette.Button, QColor(THEME["finished_bg"]))
+        palette.setColor(QPalette.ButtonText, QColor(THEME["text"]))
+        palette.setColor(QPalette.Highlight, QColor(THEME["green"]))
+        palette.setColor(QPalette.HighlightedText, QColor(THEME["text_on_color_bg"]))
+        self.setPalette(palette)
+        
         self.setStyleSheet(f"""
             QWidget {{
                 font-size: {BASE_FONT_PT}pt;
             }}
-            QLineEdit {{
+            QMainWindow, QStatusBar {{
+                background-color: {THEME['finished_bg']};
+            }}
+            QLineEdit, QListWidget {{
                 padding: 6px 8px;
+                border: 1px solid {THEME['progress_border']};
+                border-radius: 4px;
+                background-color: {THEME['window_bg']};
             }}
             QPushButton {{
-                padding: 8px 12px;
+                padding: 8px 12px; border-radius: 4px;
+                border: 1px solid {THEME['progress_border']};
+                background-color: {THEME['finished_bg']};
             }}
-            QToolButton {{
-                padding: 6px;
-            }}
-            QListWidget {{
-                padding: 6px;
-            }}
-            QStatusBar QLabel {{
-                font-size: {BASE_FONT_PT}pt;
-            }}
+            QPushButton:hover {{ background-color: {rgba_tint(THEME['green'], 0.2)}; }}
+            QPushButton:pressed {{ background-color: {rgba_tint(THEME['green'], 0.4)}; }}
+            QPushButton:default {{ border: 2px solid {THEME['green']}; }}
+            QToolButton {{ padding: 6px; border: none; border-radius: 4px; }}
+            QToolButton:hover {{ background-color: {rgba_tint(THEME['muted'], 0.2)}; }}
+            QListWidget::item {{ border-bottom: 1px solid {THEME['list_item_spacing']}; }}
+            QListWidget::item:last-child {{ border-bottom: none; }}
+            QMessageBox {{ background-color: {THEME['window_bg']}; }}
         """)
 
+
+    def _build_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("Timer name…")
 
@@ -347,13 +426,12 @@ class MainWindow(QMainWindow):
         top_row.addWidget(self.group_active_top_chk)
 
         self.list_widget = QListWidget()
-        self.list_widget.setSpacing(8)
+        self.list_widget.setSpacing(0) # Use border for spacing instead
 
         layout = QVBoxLayout(central)
         layout.addLayout(top_row)
         layout.addWidget(self.list_widget, 1)
 
-        # Status bar
         sb = QStatusBar()
         self.setStatusBar(sb)
         self.status_active_lbl = QLabel("")
@@ -362,30 +440,24 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(self.status_finished_lbl)
         self._update_status_counts()
 
-        # Bigger default window
         self.resize(650, 550)
 
     def _connect_signals(self):
         self.add_btn.clicked.connect(self._on_add_clicked)
         self.name_edit.returnPressed.connect(self._on_add_clicked)
         self.clear_finished_btn.clicked.connect(self._on_clear_finished)
-        self.group_active_top_chk.toggled.connect(lambda _: self._rebuild_list())
-
+        self.group_active_top_chk.toggled.connect(self._rebuild_list)
         self.manager.updated.connect(self._on_manager_updated)
         self.manager.structure_changed.connect(self._rebuild_list)
 
-    # ----- actions -----
     def _on_add_clicked(self):
         base = self.name_edit.text().strip() or "Timer"
-        st = self.manager.add(base)
+        self.manager.add(base)
         self.name_edit.clear()
         self.name_edit.setFocus()
-        self._add_list_item(st)
-        self._update_status_counts()
 
     def _on_clear_finished(self):
         self.manager.clear_finished()
-        self._update_status_counts()
 
     def _on_tick(self):
         self.manager.tick_all()
@@ -397,102 +469,80 @@ class MainWindow(QMainWindow):
                 w.update_view()
         self._update_status_counts()
         if self.group_active_top_chk.isChecked():
+            # A resort may be needed if a timer's remaining seconds changed its order
             self._rebuild_list()
 
-    # ----- list handling -----
     def _add_list_item(self, st: TimerState):
         item = QListWidgetItem()
         widget = TimerWidget(st)
         widget.request_remove.connect(self._on_remove_requested)
-        widget.state_changed.connect(lambda: self._on_manager_updated())
+        widget.state_changed.connect(self._on_manager_updated)
         item.setSizeHint(QSize(560, ROW_HEIGHT))
         self.list_widget.addItem(item)
         self.list_widget.setItemWidget(item, widget)
-        widget.update_view()
-        if self.group_active_top_chk.isChecked():
-            self._rebuild_list()
 
     def _rebuild_list(self):
-        sel_names = set()
-        for idx in self.list_widget.selectedIndexes():
-            w = self.list_widget.itemWidget(self.list_widget.item(idx.row()))
-            if isinstance(w, TimerWidget):
-                sel_names.add(w.model.name)
+        sel_names = {w.model.name for idx in self.list_widget.selectedIndexes()
+                     if (w := self.list_widget.itemWidget(self.list_widget.item(idx.row())))}
 
         self.list_widget.clear()
 
         items = self.manager.all_items()
-        if self.group_active_top_chk.isChecked():
-            items.sort(key=lambda t: (t.is_finished(), t.remaining_sec, t.name.lower()))
-        else:
-            items.sort(key=lambda t: (t.name.lower(),))
+        sort_key = lambda t: (t.is_finished(), t.remaining_sec, t.name.lower())
+        if not self.group_active_top_chk.isChecked():
+            sort_key = lambda t: (t.name.lower(),)
+        items.sort(key=sort_key)
 
         for st in items:
-            self._add_list_item_no_rebuild(st)
+            self._add_list_item(st)
 
         for i in range(self.list_widget.count()):
             w = self.list_widget.itemWidget(self.list_widget.item(i))
-            if isinstance(w, TimerWidget) and w.model.name in sel_names:
+            if w and w.model.name in sel_names:
                 self.list_widget.item(i).setSelected(True)
 
         self._update_status_counts()
 
-    def _add_list_item_no_rebuild(self, st: TimerState):
-        item = QListWidgetItem()
-        widget = TimerWidget(st)
-        widget.request_remove.connect(self._on_remove_requested)
-        widget.state_changed.connect(lambda: self._on_manager_updated())
-        item.setSizeHint(QSize(560, ROW_HEIGHT))
-        self.list_widget.addItem(item)
-        self.list_widget.setItemWidget(item, widget)
-        widget.update_view()
-
     def _on_remove_requested(self, name: str):
-        """Ask for confirmation when deleting a non-finished timer (Requirement #2)."""
         st = self.manager.items.get(name)
         if st and not st.is_finished():
-            # Show remaining time in message
             remaining = st.display_mmss()
             resp = QMessageBox.question(
-                self,
-                "Remove running timer?",
+                self, "Remove running timer?",
                 f"Timer \"{name}\" is still running ({remaining}).\n\nDo you want to delete it?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
             )
             if resp != QMessageBox.Yes:
                 return
         self.manager.remove(name)
-        self._rebuild_list()
 
-    # ----- status -----
     def _update_status_counts(self):
         active, finished = self.manager.counts()
         self.status_active_lbl.setText(f"Active: {active}")
         self.status_finished_lbl.setText(f"Finished: {finished}")
 
-
 # ========= ENTRY POINT =========
 def main():
     def resource_path(relative_path):
-        """ Get absolute path to resource, works for dev and for PyInstaller """
         try:
-            # PyInstaller creates a temp folder and stores path in _MEIPASS
             base_path = sys._MEIPASS
         except Exception:
             base_path = os.path.abspath(".")
-
         return os.path.join(base_path, relative_path)
 
-
-    iconPath = resource_path("app.ico")
     app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon(iconPath))   # 🔹 set global icon
+    
+    try:
+        iconPath = resource_path("app.ico")
+        if os.path.exists(iconPath):
+            app.setWindowIcon(QIcon(iconPath))
+    except Exception as e:
+        print(f"Could not load application icon: {e}")
 
     w = MainWindow()
-    w.setWindowIcon(QIcon(iconPath))     # 🔹 window icon too
     w.show()
     sys.exit(app.exec())
 
 if __name__ == "__main__":
     main()
+
