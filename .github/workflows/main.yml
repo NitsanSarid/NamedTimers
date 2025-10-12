@@ -1,8 +1,11 @@
-name: Cross-Platform PyInstaller Build
+name: Build Cross-Platform Executables
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
-
+    
 jobs:
   build:
     strategy:
@@ -12,57 +15,53 @@ jobs:
     runs-on: ${{ matrix.os }}
     
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
-
+          python-version: '3.10'
+          
       - name: Install dependencies
         run: |
-          pip install pyside6 PyInstaller
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+          pip install pillow
 
-      # 🧹 This cleanup step remains crucial
-      - name: Clean PyInstaller Directories
+      - name: Run PyInstaller (Build Windows EXE)
+        if: startsWith(matrix.os, 'windows')
+        # Windows command: uses SEMICOLON (;) for --add-data
+        run: pyinstaller --onefile --windowed --name "NamedTimers" --icon app.ico --add-data "app.ico;." main.py
+        
+      - name: Run PyInstaller (Build macOS App)
+        if: startsWith(matrix.os, 'macos')
+        # macOS command: uses COLON (:) for --add-data to include app.ico
+        run: pyinstaller --onefile --windowed --name "NamedTimers" --icon app2.icns --add-data "app.ico:." main.py
+
+      - name: Prepare macOS Artifact (Zip .app)
+        if: startsWith(matrix.os, 'macos')
         run: |
-          rm -rf build dist NamedTimers.spec
-        shell: bash
-
-      - name: Determine OS-Specific Arguments and Paths
-        id: args
-        shell: bash
-        run: |
-          APP_NAME="NamedTimers"
-          # PyInstaller flags
-          COMMON_FLAGS='--windowed --name "${APP_NAME}" --noconfirm'
-
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            # Windows: --onefile, .ico, semicolon separator
-            PYI_CMD_ARGS="${COMMON_FLAGS} --onefile --icon 'app.ico' --add-data 'app.ico;.'"
-            OUTPUT_PATH="dist/${APP_NAME}.exe"
-          else
-            # macOS: --onedir, .icns, colon separator
-            PYI_CMD_ARGS="${COMMON_FLAGS} --onedir --icon 'app.icns' --add-data 'app.ico:.'"
-            OUTPUT_PATH="dist/${APP_NAME}.app"
-          fi
+          APP_NAME="NamedTimers.app"
+          APP_VERSION="${{ github.ref_name }}"
+          # Get the app from dist folder and zip it
+          cd dist
+          zip -r "${APP_NAME// /_}_macOS_${APP_VERSION}.zip" "${APP_NAME}"
           
-          echo "pyi_args=$PYI_CMD_ARGS" >> $GITHUB_OUTPUT
-          echo "output_path=$OUTPUT_PATH" >> $GITHUB_OUTPUT
-
-      - name: Generate Spec File
-        # Use pyi-makespec to create the NamedTimers.spec file first
-        shell: bash
-        run: pyinstaller ${{ steps.args.outputs.pyi_args }} main.py
-
-      - name: Run PyInstaller Build from Spec File
-        # Build using the generated spec file to control paths explicitly
-        shell: bash
-        run: pyinstaller NamedTimers.spec --clean
-
-      - name: Upload Executable Artifact
+      - name: Upload Artifact to GitHub
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.job }}-${{ matrix.os }}
-          path: ${{ steps.args.outputs.output_path }}
+          name: ${{ startsWith(matrix.os, 'windows') && 'Windows-NamedTimers' || 'macOS-NamedTimers' }}
+          path: ${{ startsWith(matrix.os, 'windows') && 'dist/*.exe' || 'dist/*.zip' }}
+          retention-days: 7
+
+      - name: Upload Release Assets (Optional)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ startsWith(matrix.os, 'windows') && 'dist/*.exe' || '' }}
+            ${{ startsWith(matrix.os, 'macos') && 'dist/*.zip' || '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
