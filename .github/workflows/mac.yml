@@ -24,12 +24,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
+          pip install pillow
 
       - name: Run PyInstaller (Build .app with Icon)
         # Added --icon app.icns to include the icon for the macOS application bundle.
         # macOS uses a COLON (:) as the separator for --add-data if you needed to add data files,
         # but for an icon, --icon is sufficient.
-        run: pyinstaller --onefile --windowed --name "MyAppName" --icon app.icns main.py
+        run: pyinstaller --onefile --windowed --name "MyAppName" --icon app2.icns main.py
         
       - name: Prepare artifact
         run: |
