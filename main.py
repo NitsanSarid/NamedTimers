@@ -23,10 +23,10 @@ from PySide6.QtWidgets import (
 
 # ========= GLOBALS / CONFIG =========
 APP_NAME = "Named Timers"
-VERSION = "1.3.0"
+VERSION = "1.1.0"
 
 # Single source of truth for duration (change this to adjust all timers globally)
-BASE_DURATION_SEC = 1 * 60  # e.g., set to 25*60 for “pomodoro style”
+BASE_DURATION_SEC = 40 * 60  # e.g., set to 25*60 for “pomodoro style”
 
 # UI sizing
 ROW_HEIGHT = 80 # Reduced height for a more compact look
