@@ -1,0 +1,67 @@
+name: Build macOS Executable
+
+on:
+  push:
+    tags:
+      # This runs the workflow when you push a tag like v1.0.0
+      - 'v*'
+  workflow_dispatch:
+    # Allows for manual running from the Actions tab
+    
+jobs:
+  build-macos:
+    # Use a macOS runner to build the macOS executable
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout code
+        # Checks out your repository code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        # Sets up the desired Python version
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9' # Choose your target Python version
+          
+      - name: Install dependencies
+        # Install your app's dependencies including PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          # Replace 'requirements.txt' with the actual path to your requirements file
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Run PyInstaller
+        # This command creates a standalone macOS application bundle (.app)
+        # 1. Replace 'your_script_name.py' with the name of your main Python file.
+        # 2. '--windowed' creates a macOS app bundle instead of a console app.
+        # 3. '--name "YourAppName"' sets the name of the final application bundle.
+        run: pyinstaller --onefile --windowed --name "NamedTimers" main.py
+        
+      - name: Prepare artifact
+        # PyInstaller creates a folder in 'dist'. We need to zip it for easy distribution.
+        run: |
+          APP_NAME="NamedTimers.app"
+          APP_VERSION="${{ github.ref_name }}"
+          # Get the app from dist folder and zip it
+          cd dist
+          zip -r "${APP_NAME// /_}_macOS_${APP_VERSION}.zip" "${APP_NAME}"
+          
+      - name: Upload artifact to GitHub
+        # Uploads the zipped application so you can download it from the workflow run
+        uses: actions/upload-artifact@v4
+        with:
+          name: macOS-MyAppName
+          path: dist/*.zip
+          retention-days: 7
+
+      - name: Upload release assets (Optional)
+        # This step is optional and requires a 'release' job to have created a release first.
+        # It uploads the zip file directly to a GitHub Release.
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
