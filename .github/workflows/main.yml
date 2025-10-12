@@ -3,16 +3,23 @@ name: Build Cross-Platform Executables
 on:
   push:
     tags:
+      # This runs the workflow when you push a tag like v1.0.0
       - 'v*'
   workflow_dispatch:
+    # Allows for manual running from the Actions tab
     
 jobs:
   build:
+    # Use a matrix strategy to run the job on both Windows and macOS
     strategy:
       matrix:
         os: [windows-latest, macos-latest]
     
     runs-on: ${{ matrix.os }}
+    
+    # Give the job 'write' permission for contents so it can create/update a release
+    permissions:
+      contents: write
     
     steps:
       - name: Checkout code
@@ -30,17 +37,24 @@ jobs:
           pip install pyinstaller
           pip install pillow
 
+      # --- Platform-Specific PyInstaller Build Steps ---
+      
       - name: Run PyInstaller (Build Windows EXE)
+        # This step only runs on the Windows runner
         if: startsWith(matrix.os, 'windows')
         # Windows command: uses SEMICOLON (;) for --add-data
         run: pyinstaller --onefile --windowed --name "NamedTimers" --icon app.ico --add-data "app.ico;." main.py
         
       - name: Run PyInstaller (Build macOS App)
+        # This step only runs on the macOS runner
         if: startsWith(matrix.os, 'macos')
         # macOS command: uses COLON (:) for --add-data to include app.ico
         run: pyinstaller --onefile --windowed --name "NamedTimers" --icon app2.icns --add-data "app.ico:." main.py
 
+      # --- macOS Artifact Preparation ---
+
       - name: Prepare macOS Artifact (Zip .app)
+        # Only run this step on macOS
         if: startsWith(matrix.os, 'macos')
         run: |
           APP_NAME="NamedTimers.app"
@@ -49,6 +63,8 @@ jobs:
           cd dist
           zip -r "${APP_NAME// /_}_macOS_${APP_VERSION}.zip" "${APP_NAME}"
           
+      # --- Artifact Upload (For Workflow Run) ---
+
       - name: Upload Artifact to GitHub
         uses: actions/upload-artifact@v4
         with:
@@ -56,10 +72,15 @@ jobs:
           path: ${{ startsWith(matrix.os, 'windows') && 'dist/*.exe' || 'dist/*.zip' }}
           retention-days: 7
 
+      # --- GitHub Release Upload (For Tags) ---
+
       - name: Upload Release Assets (Optional)
+        # This action runs only when triggered by a tag push
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          # The 'files' input accepts a newline-delimited list of glob expressions.
+          # The conditional logic here ensures only the relevant file is listed for the current runner.
           files: |
             ${{ startsWith(matrix.os, 'windows') && 'dist/*.exe' || '' }}
             ${{ startsWith(matrix.os, 'macos') && 'dist/*.zip' || '' }}
