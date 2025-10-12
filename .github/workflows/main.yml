@@ -23,14 +23,19 @@ jobs:
       - name: Install dependencies
         run: |
           pip install pyside6 PyInstaller
-          # pip install -r requirements.txt # Uncomment if needed
+
+      - name: Clean PyInstaller Directories 🧹
+        # This step is crucial for CI to prevent directory conflict errors
+        run: |
+          rm -rf build dist NamedTimers.spec .spec
+        shell: bash
 
       - name: Determine OS-Specific PyInstaller Command
         id: pyinstaller_command
         shell: bash
         run: |
           APP_NAME="NamedTimers"
-          # Use --noconfirm to ensure clean builds
+          # Use --noconfirm to suppress prompts and confirm overwrites
           COMMON_FLAGS='--windowed --name "${APP_NAME}" --noconfirm'
 
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
@@ -55,4 +60,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.job }}-${{ matrix.os }}
-          path: ${{ steps.pyinstaller_command.outputs.path }} # Use the correct output path
+          path: ${{ steps.pyinstaller_command.outputs.path }}
