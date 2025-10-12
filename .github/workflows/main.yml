@@ -24,40 +24,45 @@ jobs:
         run: |
           pip install pyside6 PyInstaller
 
-      - name: Clean PyInstaller Directories 🧹
-        # This step is crucial for CI to prevent directory conflict errors
+      # 🧹 This cleanup step remains crucial
+      - name: Clean PyInstaller Directories
         run: |
-          rm -rf build dist NamedTimers.spec .spec
+          rm -rf build dist NamedTimers.spec
         shell: bash
 
-      - name: Determine OS-Specific PyInstaller Command
-        id: pyinstaller_command
+      - name: Determine OS-Specific Arguments and Paths
+        id: args
         shell: bash
         run: |
           APP_NAME="NamedTimers"
-          # Use --noconfirm to suppress prompts and confirm overwrites
+          # PyInstaller flags
           COMMON_FLAGS='--windowed --name "${APP_NAME}" --noconfirm'
 
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            # Windows: Use --onefile and the .ico icon
-            PYI_CMD="pyinstaller ${COMMON_FLAGS} --onefile --icon 'app.ico' --add-data 'app.ico;.' main.py"
+            # Windows: --onefile, .ico, semicolon separator
+            PYI_CMD_ARGS="${COMMON_FLAGS} --onefile --icon 'app.ico' --add-data 'app.ico;.'"
             OUTPUT_PATH="dist/${APP_NAME}.exe"
           else
-            # macOS: Use --onedir (standard for Mac GUI apps) and the .icns icon
-            PYI_CMD="pyinstaller ${COMMON_FLAGS} --onedir --icon 'app.icns' --add-data 'app.ico:.' main.py"
-            # The output is a folder: NamedTimers.app
-            OUTPUT_PATH="dist/${APP_NAME}.app" 
+            # macOS: --onedir, .icns, colon separator
+            PYI_CMD_ARGS="${COMMON_FLAGS} --onedir --icon 'app.icns' --add-data 'app.ico:.'"
+            OUTPUT_PATH="dist/${APP_NAME}.app"
           fi
           
-          echo "cmd=$PYI_CMD" >> $GITHUB_OUTPUT
-          echo "path=$OUTPUT_PATH" >> $GITHUB_OUTPUT
-          
-      - name: Run PyInstaller Build
+          echo "pyi_args=$PYI_CMD_ARGS" >> $GITHUB_OUTPUT
+          echo "output_path=$OUTPUT_PATH" >> $GITHUB_OUTPUT
+
+      - name: Generate Spec File
+        # Use pyi-makespec to create the NamedTimers.spec file first
         shell: bash
-        run: ${{ steps.pyinstaller_command.outputs.cmd }}
+        run: pyinstaller ${{ steps.args.outputs.pyi_args }} main.py
+
+      - name: Run PyInstaller Build from Spec File
+        # Build using the generated spec file to control paths explicitly
+        shell: bash
+        run: pyinstaller NamedTimers.spec --clean
 
       - name: Upload Executable Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.job }}-${{ matrix.os }}
-          path: ${{ steps.pyinstaller_command.outputs.path }}
+          path: ${{ steps.args.outputs.output_path }}
