@@ -37,15 +37,6 @@ jobs:
         # NOTE: Windows uses a SEMICOLON (;) as the separator for --add-data
         run: pyinstaller --onefile --windowed --name "NamedTimers" --icon app.ico --add-data "app.ico;." main.py
         
-      - name: Rename Executable for Clarity
-        # PyInstaller outputs the EXE as 'dist/NamedTimers.exe'. 
-        # We rename it to include the version for the artifact/release.
-        shell: bash # Use bash to simplify path/variable handling on Windows
-        run: |
-          APP_NAME="NamedTimers"
-          APP_VERSION="${{ github.ref_name }}"
-          # Rename the final EXE file
-          mv dist/${APP_NAME}.exe dist/${APP_NAME}_Windows_${APP_VERSION}.exe
           
       - name: Upload artifact to GitHub
         # Uploads the final .exe file to the workflow run's Artifacts
