@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import re
 from dataclasses import dataclass
 from typing import Dict, List
 
@@ -15,15 +16,15 @@ except ImportError:
 
 from PySide6.QtCore import Qt, QTimer, QSize, Signal, QObject
 from PySide6.QtGui import QIcon, QPalette, QColor, QFont, QPainter
-from PySide6.QtWidgets import (
+from PySide6.QtWidgets import (QRadioButton, QTimeEdit, QSpinBox, QComboBox, QGroupBox,
     QApplication, QWidget, QMainWindow, QLineEdit, QPushButton, QHBoxLayout,
     QVBoxLayout, QListWidget, QListWidgetItem, QLabel, QToolButton,
-    QCheckBox, QStyle, QMessageBox, QStyleOption
+    QCheckBox, QStyle, QMessageBox, QStyleOption,QGridLayout
 )
 
 # ========= GLOBALS / CONFIG =========
 APP_NAME = "Named Timers"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 # Single source of truth for duration (change this to adjust all timers globally)
 BASE_DURATION_SEC = 40 * 60  # e.g., set to 25*60 for “pomodoro style”
@@ -83,6 +84,7 @@ def rgba_string(hex_str: str, alpha: float = 1.0) -> str:
 @dataclass
 class TimerState:
     name: str
+    initial_duration_sec: int
     remaining_sec: int
     running: bool
     last_wall_ts: float
@@ -104,16 +106,17 @@ class TimerState:
 
     def display_mmss(self) -> str:
         if self.is_finished(): return "Done"
-        m, s = divmod(self.remaining_sec, 60)
+        m, s = divmod(abs(self.remaining_sec), 60)
         return f"{m:02d}:{s:02d}"
 
     def progress01(self) -> float:
-        done = BASE_DURATION_SEC - self.remaining_sec
-        return max(0.0, min(1.0, done / BASE_DURATION_SEC))
+        if self.initial_duration_sec <= 0: return 1.0 if self.is_finished() else 0.0
+        done = self.initial_duration_sec - self.remaining_sec
+        return max(0.0, min(1.0, done / self.initial_duration_sec))
 
     def tick_wall(self, now_ts: float):
-        if not self.running or self.is_finished():
-            self.last_wall_ts = now_ts
+        if not self.running:
+            self.last_wall_ts = now_ts # Prevent time jump when resuming
             return
         elapsed = int(now_ts - self.last_wall_ts)
         if elapsed > 0:
@@ -138,11 +141,12 @@ class TimerManager(QObject):
             i += 1
         return candidate
 
-    def add(self, name: str):
+    def add(self, name: str, duration_sec: int):
         name = self.unique_name(name)
         st = TimerState(
             name=name,
-            remaining_sec=BASE_DURATION_SEC,
+            initial_duration_sec=duration_sec,
+            remaining_sec=duration_sec,
             running=True,
             last_wall_ts=time.time()
         )
@@ -164,14 +168,20 @@ class TimerManager(QObject):
     def tick_all(self):
         now = time.time()
         any_change = False
+        just_finished = False
         for st in self.items.values():
             before = st.remaining_sec
+            was_finished = st.is_finished()
             st.tick_wall(now)
             if st.remaining_sec != before:
                 any_change = True
+            if not was_finished and st.is_finished():
+                just_finished = True
         
         if any_change:
             self.updated.emit()
+        if just_finished:
+            self.structure_changed.emit()
 
     def all_items(self) -> List[TimerState]:
         return list(self.items.values())
@@ -368,6 +378,8 @@ class MainWindow(QMainWindow):
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("New timer name…")
 
+        self._build_timer_options_ui()
+
         self.add_btn = QPushButton("Add Timer")
         self.add_btn.setDefault(True)
 
@@ -377,53 +389,134 @@ class MainWindow(QMainWindow):
         self.group_active_top_chk.setChecked(True)
 
         top_row = QHBoxLayout()
-        top_row.addWidget(self.name_edit, 1)
+        top_row.addWidget(self.name_edit, 1.5)
+        top_row.addStretch()
         top_row.addWidget(self.add_btn)
-        
-        controls_row = QHBoxLayout()
-        controls_row.addWidget(self.group_active_top_chk)
-        controls_row.addStretch()
-        controls_row.addWidget(self.clear_finished_btn)
+        top_row.addWidget(self.clear_finished_btn)
+        top_row.addWidget(self.group_active_top_chk)
+
+        add_section_layout = QVBoxLayout()
+        add_section_layout.addLayout(top_row)
+        add_section_layout.addWidget(self.options_group_box)
 
         self.list_widget = QListWidget()
         self.list_widget.setSpacing(20)
         self.list_widget.setSelectionMode(QListWidget.NoSelection)
+        self.list_widget.setStyleSheet("QListWidget::item { border-bottom: 1px solid " + THEME['progress_border'] + "; }")
 
         layout = QVBoxLayout(central)
         layout.setContentsMargins(10, 10, 10, 10)
-        layout.addLayout(top_row)
-        layout.addLayout(controls_row)
+        layout.addLayout(add_section_layout)
         layout.addWidget(self.list_widget, 1)
 
         self.resize(700, 600)
 
     def _connect_signals(self):
         self.add_btn.clicked.connect(self._on_add_clicked)
-        self.name_edit.returnPressed.connect(self._on_add_clicked)
+        self.name_edit.returnPressed.connect(self.add_btn.click)
         self.clear_finished_btn.clicked.connect(self._on_clear_finished)
         self.group_active_top_chk.toggled.connect(self._rebuild_list)
         self.manager.updated.connect(self._on_manager_updated)
         self.manager.structure_changed.connect(self._rebuild_list)
+        
+        self.default_timer_radio.toggled.connect(self._update_timer_options_visibility)
+        self.duration_timer_radio.toggled.connect(self._update_timer_options_visibility)
+        self.start_time_timer_radio.toggled.connect(self._update_timer_options_visibility)
+
+    def _build_timer_options_ui(self):
+        self.options_group_box = QGroupBox("Timer Type")
+        grid_layout = QGridLayout(self.options_group_box)
+        grid_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # --- Radio Buttons (Top Row) ---
+        self.default_timer_radio = QRadioButton(f"Default ({BASE_DURATION_SEC//60} minutes)")
+        self.duration_timer_radio = QRadioButton("Custom Duration")
+        self.start_time_timer_radio = QRadioButton("From Start Time")
+        self.default_timer_radio.setChecked(True)
+        
+        grid_layout.addWidget(self.default_timer_radio, 0, 0, Qt.AlignTop)
+        grid_layout.addWidget(self.duration_timer_radio, 0, 1, Qt.AlignTop)
+
+        # --- 'From Start Time' radio button with its label ---
+        start_time_header_layout = QHBoxLayout()
+        start_time_header_layout.setContentsMargins(0,0,0,0)
+        start_time_header_layout.addWidget(self.start_time_timer_radio)
+        start_time_label = QLabel(f"(ends {BASE_DURATION_SEC//60} min later)")
+        start_time_label.setStyleSheet("color: " + THEME['muted'] + "; font-size: 9pt;")
+        start_time_header_layout.addWidget(start_time_label)
+        start_time_header_layout.addStretch()
+        grid_layout.addLayout(start_time_header_layout, 0, 2, Qt.AlignTop)
+
+        # --- Custom Duration controls ---
+        self.duration_inputs_widget = QWidget() # Container for visibility toggling
+        duration_layout = QHBoxLayout(self.duration_inputs_widget)
+        duration_layout.setContentsMargins(0, 0, 0, 0)
+        self.duration_spinbox = QSpinBox()
+        self.duration_spinbox.setRange(1, 9999)
+        self.duration_spinbox.setValue(10)
+        self.duration_unit_combo = QComboBox()
+        self.duration_unit_combo.addItems(["minutes", "seconds"])
+        duration_layout.addWidget(self.duration_spinbox)
+        duration_layout.addWidget(self.duration_unit_combo)
+        grid_layout.addWidget(self.duration_inputs_widget, 1, 1)
+
+        # --- Start Time controls ---
+        self.start_time_inputs_widget = QWidget() # Container for visibility toggling
+        start_time_layout = QHBoxLayout(self.start_time_inputs_widget)
+        start_time_layout.setContentsMargins(0, 0, 0, 0)
+        self.start_time_edit = QTimeEdit()
+        self.start_time_edit.setDisplayFormat("HH:mm")
+        start_time_layout.addWidget(self.start_time_edit)
+        grid_layout.addWidget(self.start_time_inputs_widget, 1, 2)
+
+        grid_layout.setColumnStretch(3, 1) # Add stretch to the end
+
+        self._update_timer_options_visibility()
+
+    def _update_timer_options_visibility(self):
+        self.duration_inputs_widget.setVisible(self.duration_timer_radio.isChecked())
+        self.start_time_inputs_widget.setVisible(self.start_time_timer_radio.isChecked())
 
     def _on_add_clicked(self):
-        self.manager.add(self.name_edit.text())
+        name = self.name_edit.text().strip()
+        if not name:
+            name = "Untitled Timer"
+
+        duration = BASE_DURATION_SEC
+
+        if self.duration_timer_radio.isChecked():
+            value = self.duration_spinbox.value()
+            unit = self.duration_unit_combo.currentText()
+            duration = value * 60 if unit == "minutes" else value
+
+        elif self.start_time_timer_radio.isChecked():
+            start_time = self.start_time_edit.time()
+            start_h, start_m = start_time.hour(), start_time.minute()
+            
+            now = time.localtime()
+            end_time_t = time.mktime(now[:3] + (start_h, start_m + BASE_DURATION_SEC // 60, 0) + now[6:])
+            
+            if end_time_t < time.time():
+                end_time_t += 24 * 60 * 60 # Assume next day if time is in the past
+            
+            duration = int(end_time_t - time.time())
+
+        # Cap the duration at the global maximum
+        if duration > BASE_DURATION_SEC:
+            max_minutes = BASE_DURATION_SEC // 60
+            QMessageBox.warning(self, "Duration Too Long", f"The maximum allowed timer duration is {max_minutes} minutes.\nPlease choose a shorter duration.")
+            return
+
+        if duration <= 0:
+            QMessageBox.warning(self, "Invalid Time", "The calculated timer duration is in the past. Please choose a future time.")
+            return
+        
+        self.manager.add(name, duration)
         self.name_edit.clear()
         self.name_edit.setFocus()
 
     def _on_clear_finished(self):
         self.manager.clear_finished()
-
-    def _on_tick(self):
-        self.manager.tick_all()
-
-    def _on_manager_updated(self):
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
-            w = self.list_widget.itemWidget(item)
-            if isinstance(w, TimerWidget):
-                w.update_view()
-        if self.group_active_top_chk.isChecked():
-            self._rebuild_list()
 
     def _add_list_item(self, st: TimerState):
         item = QListWidgetItem(self.list_widget)
@@ -436,6 +529,11 @@ class MainWindow(QMainWindow):
     def _rebuild_list(self):
         self.list_widget.clear()
         items = self.manager.all_items()
+        
+        # Update stylesheet in case theme changed
+        self.list_widget.setStyleSheet("QListWidget::item { border-bottom: 1px solid " + THEME['progress_border'] + "; }")
+
+
         if self.group_active_top_chk.isChecked():
             items.sort(key=lambda t: (t.is_finished(), t.remaining_sec, t.name.lower()))
         else:
@@ -454,6 +552,17 @@ class MainWindow(QMainWindow):
             )
             if resp != QMessageBox.Yes: return
         self.manager.remove(name)
+
+    def _on_tick(self):
+        self.manager.tick_all()
+
+    def _on_manager_updated(self):
+        # This is more efficient than rebuilding the whole list on every tick
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            w = self.list_widget.itemWidget(item)
+            if isinstance(w, TimerWidget):
+                w.update_view()
 
 
 # ========= ENTRY POINT =========
@@ -479,4 +588,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
