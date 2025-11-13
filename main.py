@@ -1,7 +1,6 @@
 import os
 import sys
 import time
-import re
 from dataclasses import dataclass
 from typing import Dict, List
 
@@ -14,23 +13,23 @@ except ImportError:
     print("Warning: darkdetect not found. Defaulting to light theme. `pip install darkdetect` for auto-detection.")
     darkdetect = None
 
-from PySide6.QtCore import Qt, QTimer, QSize, Signal, QObject
-from PySide6.QtGui import QIcon, QPalette, QColor, QFont, QPainter
+from PySide6.QtCore import Qt, QTimer, QSize, Signal, QObject, QEvent
+from PySide6.QtGui import QIcon, QPalette, QColor, QFont, QPainter, QWheelEvent
 from PySide6.QtWidgets import (QRadioButton, QTimeEdit, QSpinBox, QComboBox, QGroupBox,
-    QApplication, QWidget, QMainWindow, QLineEdit, QPushButton, QHBoxLayout,
+    QApplication, QWidget, QMainWindow, QLineEdit, QPushButton, QHBoxLayout, QStackedWidget, QAbstractItemView,
     QVBoxLayout, QListWidget, QListWidgetItem, QLabel, QToolButton,
     QCheckBox, QStyle, QMessageBox, QStyleOption,QGridLayout
 )
 
 # ========= GLOBALS / CONFIG =========
 APP_NAME = "Named Timers"
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 # Single source of truth for duration (change this to adjust all timers globally)
 BASE_DURATION_SEC = 40 * 60  # e.g., set to 25*60 for “pomodoro style”
 
 # UI sizing
-ROW_HEIGHT = 80 # Reduced height for a more compact look
+ROW_HEIGHT = 80 # Made more compact
 BASE_FONT_PT = 12
 TITLE_FONT_PT = 14
 TIME_FONT_PT = 16
@@ -88,6 +87,8 @@ class TimerState:
     remaining_sec: int
     running: bool
     last_wall_ts: float
+    age_group: str
+    gender: str
 
     def clamp(self):
         self.remaining_sec = max(0, self.remaining_sec)
@@ -141,17 +142,31 @@ class TimerManager(QObject):
             i += 1
         return candidate
 
-    def add(self, name: str, duration_sec: int):
+    def add(self, name: str, duration_sec: int, age_group: str, gender: str):
         name = self.unique_name(name)
         st = TimerState(
             name=name,
             initial_duration_sec=duration_sec,
             remaining_sec=duration_sec,
             running=True,
-            last_wall_ts=time.time()
+            last_wall_ts=time.time(),
+            age_group=age_group,
+            gender=gender,
         )
         self.items[name] = st
         self.structure_changed.emit()
+
+    def rename(self, old_name: str, new_name: str) -> bool:
+        new_name = new_name.strip()
+        if not new_name or old_name == new_name:
+            return False # No change
+        if new_name in self.items:
+            return False # Name already exists
+        
+        st = self.items.pop(old_name)
+        st.name = new_name
+        self.items[new_name] = st
+        return True
 
     def remove(self, name: str):
         if name in self.items:
@@ -195,6 +210,7 @@ class TimerManager(QObject):
 # ========= UI WIDGET (NEW DESIGN) =========
 class TimerWidget(QWidget):
     request_remove = Signal(str)
+    request_rename = Signal(str, str)
     state_changed = Signal()
 
     def __init__(self, model: TimerState, parent=None):
@@ -213,20 +229,55 @@ class TimerWidget(QWidget):
         p = QPainter(self)
         self.style().drawPrimitive(QStyle.PE_Widget, opt, p, self)
 
+    def eventFilter(self, watched, event):
+        # Intercept wheel events on the combo boxes to prevent scrolling from changing their values.
+        # Instead of consuming the event, forward it to the parent QListWidget to enable scrolling.
+        if (watched in (self.age_combo, self.gender_combo)) and event.type() == QEvent.Wheel:
+            # The event passed to the filter is owned by Qt and will be deleted.
+            # To re-post it, we must create a new copy.
+            new_event = QWheelEvent(
+                event.position(),
+                event.globalPosition(),
+                event.pixelDelta(),
+                event.angleDelta(),
+                event.buttons(),
+                event.modifiers(),
+                event.phase(),
+                event.inverted(),
+                event.source()
+            )
+            list_widget = self.parent().parent() # self -> viewport -> QListWidget
+            if isinstance(list_widget, QListWidget):
+                # Post the new, safe event to the list widget's viewport
+                QApplication.postEvent(list_widget.viewport(), new_event)
+                return True # Event handled, don't pass to combobox
+        
+        return super().eventFilter(watched, event)
+
     def _build_ui(self):
-        self.name_lbl = QLabel(self.model.name)
         self.time_lbl = QLabel()
         self.time_lbl.setMinimumWidth(100)
         self.time_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        
+
+        # --- Editable Age and Gender ---
+        self.age_combo = QComboBox()
+        self.age_combo.addItems(["10-13", "14-17", "18-20", "21-30", "31-40", "41-50", "51-64", "65+"])
+        self.age_combo.installEventFilter(self)
+
+        self.gender_combo = QComboBox()
+        self.gender_combo.addItems(["Male", "Female", "Other"])
+        self.gender_combo.installEventFilter(self)
+
+        self.name_edit = QLineEdit(self.model.name)
         font_name = self.font()
         font_name.setPointSize(TITLE_FONT_PT)
         font_name.setWeight(QFont.Weight.Bold)
-        self.name_lbl.setFont(font_name)
+        self.name_edit.setFont(font_name)
         
         font_time = self.font()
         font_time.setFamily("Consolas, 'Cascadia Mono', 'Courier New', monospace")
         font_time.setPointSize(TIME_FONT_PT)
+
         self.time_lbl.setFont(font_time)
 
         self.pause_btn = QToolButton()
@@ -240,21 +291,33 @@ class TimerWidget(QWidget):
         self.remove_btn.setIconSize(QSize(20, 20))
         self.remove_btn.clicked.connect(lambda: self.request_remove.emit(self.model.name))
         
-        content_layout = QHBoxLayout()
-        content_layout.setContentsMargins(20, 10, 15, 10)
-        content_layout.setSpacing(15)
-        content_layout.addWidget(self.name_lbl, 1)
-        content_layout.addWidget(self.time_lbl)
-        content_layout.addWidget(self.pause_btn)
-        content_layout.addWidget(self.remove_btn)
+        # --- Top Row: Name and Time ---
+        top_row_layout = QHBoxLayout()
+        top_row_layout.addWidget(self.name_edit, 1)
+        top_row_layout.addWidget(self.time_lbl)
 
+        # --- Bottom Row: Details and Controls ---
+        bottom_row_layout = QHBoxLayout()
+        bottom_row_layout.setContentsMargins(0, 2, 0, 0)
+        bottom_row_layout.addWidget(QLabel("Age:"))
+        bottom_row_layout.addWidget(self.age_combo)
+        bottom_row_layout.addWidget(QLabel("Gender:"))
+        bottom_row_layout.addWidget(self.gender_combo)
+        bottom_row_layout.addStretch(1)
+        bottom_row_layout.addWidget(self.pause_btn)
+        bottom_row_layout.addWidget(self.remove_btn)
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(0,0,0,0)
-        root_layout.setSpacing(0)
-        root_layout.addLayout(content_layout)
+        root_layout.setContentsMargins(15, 8, 10, 8)
+        root_layout.setSpacing(4)
+        root_layout.addLayout(top_row_layout)
+        root_layout.addLayout(bottom_row_layout)
         
         self.setMinimumHeight(ROW_HEIGHT)
+
+        self.age_combo.currentTextChanged.connect(self._on_details_changed)
+        self.gender_combo.currentTextChanged.connect(self._on_details_changed)
+        self.name_edit.editingFinished.connect(self._on_name_changed)
 
     def _toggle_pause(self):
         if self.model.is_finished(): return
@@ -262,9 +325,24 @@ class TimerWidget(QWidget):
         self.state_changed.emit()
         self.update_view()
 
+    def _on_name_changed(self):
+        old_name = self.model.name
+        new_name = self.name_edit.text()
+        if old_name != new_name:
+            self.request_rename.emit(old_name, new_name)
+
+    def _on_details_changed(self):
+        self.model.age_group = self.age_combo.currentText()
+        self.model.gender = self.gender_combo.currentText()
+        self.state_changed.emit() # Notify manager that a change occurred
+
     def update_view(self):
         """Updates colors and styles for the widget and its progress bar."""
-        self.name_lbl.setText(self.model.name)
+        # Only update the name text if the user is not currently editing it.
+        if not self.name_edit.hasFocus():
+            self.name_edit.setText(self.model.name)
+        self.age_combo.setCurrentText(self.model.age_group)
+        self.gender_combo.setCurrentText(self.model.gender)
         self.time_lbl.setText(self.model.display_mmss())
 
         icon = QStyle.SP_MediaPause if self.model.running and not self.model.is_finished() else QStyle.SP_MediaPlay
@@ -277,9 +355,15 @@ class TimerWidget(QWidget):
         
         text_color_rgba_str = rgba_string(text_color_hex)
         
+        self.age_combo.setEnabled(not self.model.is_finished())
+        self.gender_combo.setEnabled(not self.model.is_finished())
+        self.name_edit.setReadOnly(self.model.is_finished())
+
         if not self.model.running and not self.model.is_finished(): # Paused
             text_color_rgba_str = rgba_string(text_color_hex, alpha=0.6)
         elif self.model.is_finished():
+            # For finished timers, also mute the age and gender labels
+            text_color_rgba_str = rgba_string(text_color_hex, alpha=0.5)
             bg_color_hex = THEME['finished_bg']
             text_color_rgba_str = rgba_string(text_color_hex, alpha=0.5)
 
@@ -287,12 +371,27 @@ class TimerWidget(QWidget):
             TimerWidget {{
                 background-color: {bg_color_hex};
                 border-radius: 8px;
-                border: 5px solid {status_color_hex};
+                border: 3px solid {status_color_hex};
             }}
             QLabel {{
                 color: {text_color_rgba_str};
                 background-color: transparent;
                 border: none;
+            }}
+            QLineEdit {{
+                color: {text_color_rgba_str};
+                background-color: transparent;
+                padding: 2px;
+                border: none;
+            }}
+            QComboBox {{
+                padding: 2px 4px; border: 1px solid {THEME['progress_border']};
+                border-radius: 4px; background-color: {THEME['widget_bg']};
+            }}
+            QComboBox:disabled {{
+                background-color: {THEME['finished_bg']};
+                color: {rgba_string(text_color_hex, alpha=0.5)};
+                border: 1px solid {rgba_string(THEME['progress_border'], alpha=0.5)};
             }}
             QToolButton {{
                 background-color: transparent; 
@@ -371,6 +470,7 @@ class MainWindow(QMainWindow):
             QMessageBox {{ background-color: {THEME['window_bg']}; }}
         """)
 
+
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
@@ -378,38 +478,65 @@ class MainWindow(QMainWindow):
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("New timer name…")
 
+        # --- Build Input Widgets ---
+        self.age_combo = QComboBox()
+        self.age_combo.addItems(["Select Age...", "10-13", "14-17", "18-20", "21-30", "31-40", "41-50", "51-64", "65+"])
+
+        gender_group_box = QGroupBox("Gender")
+        gender_layout = QHBoxLayout(gender_group_box)
+        self.gender_male_radio = QRadioButton("Male")
+        self.gender_female_radio = QRadioButton("Female")
+        self.gender_other_radio = QRadioButton("Other")
+        self.gender_male_radio.setChecked(True)
+        gender_layout.addWidget(self.gender_male_radio)
+        gender_layout.addWidget(self.gender_female_radio)
+        gender_layout.addWidget(self.gender_other_radio)
+
         self._build_timer_options_ui()
 
         self.add_btn = QPushButton("Add Timer")
         self.add_btn.setDefault(True)
 
         self.clear_finished_btn = QPushButton("Clear Finished")
-
         self.group_active_top_chk = QCheckBox("Active on top")
         self.group_active_top_chk.setChecked(True)
 
-        top_row = QHBoxLayout()
-        top_row.addWidget(self.name_edit, 1.5)
-        top_row.addStretch()
-        top_row.addWidget(self.add_btn)
-        top_row.addWidget(self.clear_finished_btn)
-        top_row.addWidget(self.group_active_top_chk)
+        # --- Create Sidebar for Adding Timers ---
+        add_timer_panel = QGroupBox("Create Timer")
+        add_timer_layout = QVBoxLayout(add_timer_panel)
+        add_timer_layout.setSpacing(12)
+        add_timer_layout.addWidget(self.name_edit)
+        add_timer_layout.addWidget(self.age_combo)
+        add_timer_layout.addWidget(gender_group_box)
+        add_timer_layout.addWidget(self.options_group_box)
+        add_timer_layout.addStretch(1)
+        add_timer_layout.addWidget(self.add_btn)
 
-        add_section_layout = QVBoxLayout()
-        add_section_layout.addLayout(top_row)
-        add_section_layout.addWidget(self.options_group_box)
+        # --- Create Main Area for Timer List ---
+        list_toolbar_layout = QHBoxLayout()
+        list_toolbar_layout.addStretch(1)
+        list_toolbar_layout.addWidget(self.clear_finished_btn)
+        list_toolbar_layout.addWidget(self.group_active_top_chk)
 
         self.list_widget = QListWidget()
-        self.list_widget.setSpacing(20)
+        self.list_widget.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.list_widget.verticalScrollBar().setSingleStep(ROW_HEIGHT // 6) # Scroll 1/3 of a row per wheel click
+        self.list_widget.setSpacing(10)
         self.list_widget.setSelectionMode(QListWidget.NoSelection)
         self.list_widget.setStyleSheet("QListWidget::item { border-bottom: 1px solid " + THEME['progress_border'] + "; }")
 
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.addLayout(add_section_layout)
-        layout.addWidget(self.list_widget, 1)
+        main_layout = QVBoxLayout()
+        main_layout.addLayout(list_toolbar_layout)
+        main_layout.addWidget(self.list_widget, 1)
 
-        self.resize(700, 600)
+        # --- Combine Sidebar and Main Area into Final Layout ---
+        layout = QHBoxLayout(central)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.addLayout(main_layout, 3) # Main area takes 3/4 of the space
+        layout.addWidget(add_timer_panel, 1) # Sidebar takes 1/4 of the space
+
+        self.resize(950, 700)
+        self.setMinimumWidth(1030) # Prevent timer widget content from being truncated
 
     def _connect_signals(self):
         self.add_btn.clicked.connect(self._on_add_clicked)
@@ -447,10 +574,17 @@ class MainWindow(QMainWindow):
         start_time_header_layout.addStretch()
         grid_layout.addLayout(start_time_header_layout, 0, 2, Qt.AlignTop)
 
+        # --- Stacked widget for options to prevent resizing ---
+        self.options_stack = QStackedWidget()
+        grid_layout.addWidget(self.options_stack, 1, 0, 1, 3) # Span across all columns
+
+        # Page 0: Empty widget for "Default"
+        self.options_stack.addWidget(QWidget())
+
         # --- Custom Duration controls ---
-        self.duration_inputs_widget = QWidget() # Container for visibility toggling
-        duration_layout = QHBoxLayout(self.duration_inputs_widget)
-        duration_layout.setContentsMargins(0, 0, 0, 0)
+        duration_page = QWidget()
+        duration_layout = QHBoxLayout(duration_page)
+        duration_layout.setContentsMargins(0,0,0,0)
         self.duration_spinbox = QSpinBox()
         self.duration_spinbox.setRange(1, 9999)
         self.duration_spinbox.setValue(10)
@@ -458,30 +592,44 @@ class MainWindow(QMainWindow):
         self.duration_unit_combo.addItems(["minutes", "seconds"])
         duration_layout.addWidget(self.duration_spinbox)
         duration_layout.addWidget(self.duration_unit_combo)
-        grid_layout.addWidget(self.duration_inputs_widget, 1, 1)
+        duration_layout.addStretch()
+        self.options_stack.addWidget(duration_page)
 
         # --- Start Time controls ---
-        self.start_time_inputs_widget = QWidget() # Container for visibility toggling
-        start_time_layout = QHBoxLayout(self.start_time_inputs_widget)
-        start_time_layout.setContentsMargins(0, 0, 0, 0)
+        start_time_page = QWidget()
+        start_time_layout = QHBoxLayout(start_time_page)
+        start_time_layout.setContentsMargins(0,0,0,0)
         self.start_time_edit = QTimeEdit()
         self.start_time_edit.setDisplayFormat("HH:mm")
         start_time_layout.addWidget(self.start_time_edit)
-        grid_layout.addWidget(self.start_time_inputs_widget, 1, 2)
-
-        grid_layout.setColumnStretch(3, 1) # Add stretch to the end
+        start_time_layout.addStretch()
+        self.options_stack.addWidget(start_time_page)
 
         self._update_timer_options_visibility()
 
     def _update_timer_options_visibility(self):
-        self.duration_inputs_widget.setVisible(self.duration_timer_radio.isChecked())
-        self.start_time_inputs_widget.setVisible(self.start_time_timer_radio.isChecked())
+        if self.default_timer_radio.isChecked(): self.options_stack.setCurrentIndex(0)
+        elif self.duration_timer_radio.isChecked(): self.options_stack.setCurrentIndex(1)
+        elif self.start_time_timer_radio.isChecked(): self.options_stack.setCurrentIndex(2)
 
     def _on_add_clicked(self):
         name = self.name_edit.text().strip()
         if not name:
             name = "Untitled Timer"
 
+        # --- Get Age and Gender ---
+        age_group = self.age_combo.currentText()
+        if self.age_combo.currentIndex() == 0: # "Select Age..."
+            QMessageBox.warning(self, "Missing Information", "Please select an age group.")
+            return
+
+        gender = "Other"
+        if self.gender_male_radio.isChecked():
+            gender = "Male"
+        elif self.gender_female_radio.isChecked():
+            gender = "Female"
+
+        # --- Get Duration ---
         duration = BASE_DURATION_SEC
 
         if self.duration_timer_radio.isChecked():
@@ -511,7 +659,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid Time", "The calculated timer duration is in the past. Please choose a future time.")
             return
         
-        self.manager.add(name, duration)
+        self.manager.add(name, duration, age_group, gender)
         self.name_edit.clear()
         self.name_edit.setFocus()
 
@@ -521,6 +669,7 @@ class MainWindow(QMainWindow):
     def _add_list_item(self, st: TimerState):
         item = QListWidgetItem(self.list_widget)
         widget = TimerWidget(st)
+        widget.request_rename.connect(self._on_rename_requested)
         widget.request_remove.connect(self._on_remove_requested)
         widget.state_changed.connect(self._on_manager_updated)
         item.setSizeHint(widget.sizeHint())
@@ -541,6 +690,14 @@ class MainWindow(QMainWindow):
 
         for st in items:
             self._add_list_item(st)
+
+    def _on_rename_requested(self, old_name: str, new_name: str):
+        success = self.manager.rename(old_name, new_name)
+        if success:
+            self._rebuild_list() # Rebuild to reflect the change
+        else:
+            QMessageBox.warning(self, "Rename Failed", f"Could not rename timer. The name '{new_name}' might already be in use.")
+            self._rebuild_list() # Rebuild to revert the text in the QLineEdit
 
     def _on_remove_requested(self, name: str):
         st = self.manager.items.get(name)
