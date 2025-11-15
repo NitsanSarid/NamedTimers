@@ -271,7 +271,7 @@ class TimerWidget(QWidget):
 
         # --- Editable Age and Gender ---
         self.age_combo = QComboBox()
-        self.age_combo.addItems(["10-13", "14-17", "18-20", "21-30", "31-40", "41-50", "51-64", "65+"])
+        self.age_combo.addItems(["N/A", "10-13", "14-17", "18-20", "21-30", "31-40", "41-50", "51-64", "65+"])
         self.age_combo.installEventFilter(self)
 
         self.gender_combo = QComboBox()
@@ -490,7 +490,7 @@ class MainWindow(QMainWindow):
 
         # --- Build Input Widgets ---
         self.age_combo = QComboBox()
-        self.age_combo.addItems(["Select Age...", "10-13", "14-17", "18-20", "21-30", "31-40", "41-50", "51-64", "65+"])
+        self.age_combo.addItems(["Select Age...", "N/A", "10-13", "14-17", "18-20", "21-30", "31-40", "41-50", "51-64", "65+"])
 
         gender_group_box = QGroupBox("Gender")
         gender_layout = QHBoxLayout(gender_group_box)
@@ -629,9 +629,8 @@ class MainWindow(QMainWindow):
 
         # --- Get Age and Gender ---
         age_group = self.age_combo.currentText()
-        if self.age_combo.currentIndex() == 0: # "Select Age..."
-            QMessageBox.warning(self, "Missing Information", "Please select an age group.")
-            return
+        if age_group == "Select Age...":
+            age_group = "N/A"
 
         gender = "Other"
         if self.gender_male_radio.isChecked():
