@@ -43,13 +43,13 @@ jobs:
         # This step only runs on the Windows runner
         if: startsWith(matrix.os, 'windows')
         # Windows command: uses SEMICOLON (;) for --add-data
-        run: pyinstaller --onefile --windowed --name "NamedTimers" --icon app.ico --add-data "app.ico;." main.py
+        run: pyinstaller --onefile --windowed --name "NamedTimers_${{ github.ref_name }}" --icon app.ico --add-data "app.ico;." main.py
         
       - name: Run PyInstaller (Build macOS App)
         # This step only runs on the macOS runner
         if: startsWith(matrix.os, 'macos')
         # macOS command: uses COLON (:) for --add-data to include app.ico
-        run: pyinstaller --onefile --windowed --name "NamedTimers" --icon app2.icns --add-data "app.ico:." main.py
+        run: pyinstaller --onefile --windowed --name "NamedTimers_${{ github.ref_name }}" --icon app2.icns --add-data "app.ico:." main.py
 
       # --- macOS Artifact Preparation ---
 
@@ -57,11 +57,10 @@ jobs:
         # Only run this step on macOS
         if: startsWith(matrix.os, 'macos')
         run: |
-          APP_NAME="NamedTimers.app"
-          APP_VERSION="${{ github.ref_name }}"
+          APP_NAME="NamedTimers_${{ github.ref_name }}.app"
           # Get the app from dist folder and zip it
           cd dist
-          zip -r "${APP_NAME// /_}_macOS_${APP_VERSION}.zip" "${APP_NAME}"
+          zip -r "${APP_NAME// /_}_macOS.zip" "${APP_NAME}"
           
       # --- Artifact Upload (For Workflow Run) ---
 
