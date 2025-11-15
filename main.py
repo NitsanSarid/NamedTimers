@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (QRadioButton, QTimeEdit, QSpinBox, QComboBox, QGr
 
 # ========= GLOBALS / CONFIG =========
 APP_NAME = "Named Timers"
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 # Single source of truth for duration (change this to adjust all timers globally)
 BASE_DURATION_SEC = 40 * 60  # e.g., set to 25*60 for “pomodoro style”
@@ -217,7 +217,17 @@ class TimerWidget(QWidget):
         super().__init__(parent)
         self.model = model
         self._build_ui()
-        self.update_view()
+        # Set initial state from the model. We block signals to prevent the
+        # currentTextChanged signal from firing during this setup, which would
+        # create an unwanted feedback loop via the _on_details_changed slot.
+        self.age_combo.blockSignals(True)
+        self.age_combo.setCurrentText(self.model.age_group)
+        self.age_combo.blockSignals(False)
+
+        self.gender_combo.blockSignals(True)
+        self.gender_combo.setCurrentText(self.model.gender)
+        self.gender_combo.blockSignals(False)
+        self.update_view() # Update colors and other dynamic properties
 
     def paintEvent(self, event):
         """
@@ -628,6 +638,9 @@ class MainWindow(QMainWindow):
             gender = "Male"
         elif self.gender_female_radio.isChecked():
             gender = "Female"
+        elif self.gender_other_radio.isChecked():
+            gender = "Other"
+
 
         # --- Get Duration ---
         duration = BASE_DURATION_SEC
@@ -661,6 +674,11 @@ class MainWindow(QMainWindow):
         
         self.manager.add(name, duration, age_group, gender)
         self.name_edit.clear()
+
+        # Reset input fields for the next timer
+        self.age_combo.setCurrentIndex(0)
+        self.gender_male_radio.setChecked(True)
+
         self.name_edit.setFocus()
 
     def _on_clear_finished(self):
